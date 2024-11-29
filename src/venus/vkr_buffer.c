@@ -37,6 +37,18 @@ vkr_dispatch_vkCreateBuffer(struct vn_dispatch_context *dispatch,
     * vkr_physical_device_init_memory_properties as well.
     */
 
+#if defined (__ANDROID__)
+   if (getenv("ANDROID_VENUS")) {
+      VkExternalMemoryBufferCreateInfo *handle_info = vkr_find_struct(
+         args->pCreateInfo->pNext, VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO);
+      if (handle_info) {
+         VkBaseInStructure *prev_of_handle_info = vkr_find_prev_struct(
+            args->pCreateInfo, VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO);
+         prev_of_handle_info->pNext = handle_info->pNext;
+      }
+   }
+#endif
+
    vkr_buffer_create_and_add(dispatch->data, args);
 }
 

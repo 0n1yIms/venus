@@ -146,6 +146,17 @@ vkr_dispatch_vkCreateDevice(struct vn_dispatch_context *dispatch,
       if (physical_dev->KHR_external_fence_fd)
          exts[ext_count++] = "VK_KHR_external_fence_fd";
 
+#if defined (__ANDROID__)
+      if (getenv("ANDROID_VENUS")) {
+         for (unsigned i = 0u; i < ext_count; i++) {
+            if (!strcmp(exts[i], "VK_EXT_external_memory_dma_buf"))
+               exts[i] = "VK_ANDROID_external_memory_android_hardware_buffer";
+            if (!strcmp(exts[i], "VK_EXT_image_drm_format_modifier"))
+               exts[i--] = exts[--ext_count];
+         }
+      }
+#endif
+
       ((VkDeviceCreateInfo *)args->pCreateInfo)->ppEnabledExtensionNames = exts;
       ((VkDeviceCreateInfo *)args->pCreateInfo)->enabledExtensionCount = ext_count;
    }

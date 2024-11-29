@@ -31,6 +31,20 @@ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
     * situation because the app does not consider the memory external.
     */
 
+#if defined (__ANDROID__)
+   if (getenv("ANDROID_VENUS")) {
+      VkExternalMemoryImageCreateInfo *handle_info = vkr_find_struct(
+         args->pCreateInfo->pNext, VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
+      if (handle_info) {
+         VkBaseInStructure *prev_of_handle_info = vkr_find_prev_struct(
+            args->pCreateInfo, VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
+         prev_of_handle_info->pNext = handle_info->pNext;
+      }
+      VkImageCreateInfo *image_info = (void *)args->pCreateInfo;
+      image_info->tiling = VK_IMAGE_TILING_LINEAR;
+   }
+#endif
+
    vkr_image_create_and_add(dispatch->data, args);
 }
 
@@ -136,6 +150,14 @@ vkr_dispatch_vkGetImageDrmFormatModifierPropertiesEXT(
 {
    struct vkr_device *dev = vkr_device_from_handle(args->device);
    struct vn_device_proc_table *vk = &dev->proc_table;
+
+#if defined (__ANDROID__)
+   if (getenv("ANDROID_VENUS")) {
+      args->pProperties->drmFormatModifier = 0 /* DRM_FORMAT_MOD_LINEAR */ ;
+      args->ret = VK_SUCCESS;
+      return;
+   }
+#endif
 
    vn_replace_vkGetImageDrmFormatModifierPropertiesEXT_args_handle(args);
    args->ret = vk->GetImageDrmFormatModifierPropertiesEXT(args->device, args->image,

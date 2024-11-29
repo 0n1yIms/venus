@@ -7301,7 +7301,8 @@ static void wait_sync(struct vrend_fence *fence)
       int ret;
       vrend_state.polling = true;
       do {
-         ret = timespec_get(&ts, TIME_UTC);
+//         ret = timespec_get(&ts, TIME_UTC);
+	 ret = clock_gettime(CLOCK_REALTIME, &ts);
          assert(ret);
          ts.tv_sec += 5;
          ret = cnd_timedwait(&vrend_state.poll_cond, &vrend_state.poll_mutex, &ts);

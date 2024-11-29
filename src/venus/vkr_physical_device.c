@@ -236,6 +236,22 @@ vkr_physical_device_init_extensions(struct vkr_physical_device *physical_dev,
       }
    }
 
+#if defined (__ANDROID__)
+   if (getenv("ANDROID_VENUS")) {
+      physical_dev->EXT_external_memory_dma_buf = true;
+
+      if (advertised_count + 2 > count)
+         exts = realloc(exts, sizeof(*exts) * (advertised_count + 2));
+
+      exts[advertised_count++] =
+         (VkExtensionProperties){ VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
+                                  VK_EXT_EXTERNAL_MEMORY_DMA_BUF_SPEC_VERSION };
+      exts[advertised_count++] =
+         (VkExtensionProperties){ VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
+                                  VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_SPEC_VERSION };
+   }
+#endif
+
    if (physical_dev->KHR_external_fence_fd) {
       const VkPhysicalDeviceExternalFenceInfo fence_info = {
          .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_FENCE_INFO,
@@ -611,9 +627,36 @@ vkr_dispatch_vkGetPhysicalDeviceFormatProperties2(
    UNUSED struct vn_dispatch_context *dispatch,
    struct vn_command_vkGetPhysicalDeviceFormatProperties2 *args)
 {
+#if defined (__ANDROID__)
+   VkDrmFormatModifierPropertiesListEXT *mod_list = vkr_find_struct(
+      args->pFormatProperties, VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT);
+   if (getenv("ANDROID_VENUS") && mod_list) {
+      VkBaseInStructure *prev_of_mod_list =
+         vkr_find_prev_struct(args->pFormatProperties,
+                              VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT);
+      prev_of_mod_list->pNext = mod_list->pNext;
+
+      mod_list->drmFormatModifierCount = 1;
+
+      if (mod_list->pDrmFormatModifierProperties) {
+         mod_list->pDrmFormatModifierProperties[0] = (VkDrmFormatModifierPropertiesEXT){
+            .drmFormatModifier = 0 /* DRM_FORMAT_MOD_LINEAR */,
+            .drmFormatModifierPlaneCount = 1,
+         };
+      }
+   }
+#endif
+
    vn_replace_vkGetPhysicalDeviceFormatProperties2_args_handle(args);
    vkGetPhysicalDeviceFormatProperties2(args->physicalDevice, args->format,
                                         args->pFormatProperties);
+
+#if defined (__ANDROID__)
+   if (getenv("ANDROID_VENUS") && mod_list) {
+      mod_list->pNext = args->pFormatProperties->pNext;
+      args->pFormatProperties->pNext = mod_list;
+   }
+#endif
 }
 
 static void
@@ -621,6 +664,20 @@ vkr_dispatch_vkGetPhysicalDeviceImageFormatProperties2(
    UNUSED struct vn_dispatch_context *dispatch,
    struct vn_command_vkGetPhysicalDeviceImageFormatProperties2 *args)
 {
+#if defined (__ANDROID__)
+   if (getenv("ANDROID_VENUS")) {
+      VkPhysicalDeviceImageDrmFormatModifierInfoEXT *mod_info = vkr_find_struct(
+         args->pImageFormatInfo->pNext,
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT);
+      if (mod_info) {
+         VkBaseInStructure *prev_of_mod_info = vkr_find_prev_struct(
+            args->pImageFormatInfo,
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT);
+         prev_of_mod_info->pNext = mod_info->pNext;
+      }
+   }
+#endif
+
    vn_replace_vkGetPhysicalDeviceImageFormatProperties2_args_handle(args);
    args->ret = vkGetPhysicalDeviceImageFormatProperties2(
       args->physicalDevice, args->pImageFormatInfo, args->pImageFormatProperties);

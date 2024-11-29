@@ -395,6 +395,7 @@ static void vtest_server_open_read_file(void)
 static void vtest_server_open_socket(void)
 {
    struct sockaddr_un un;
+   const char* socket_name = os_get_option("VTEST_RENDERER_SOCKET_NAME");
 
    server.socket = socket(PF_UNIX, SOCK_STREAM, 0);
    if (server.socket < 0) {
@@ -404,7 +405,11 @@ static void vtest_server_open_socket(void)
    memset(&un, 0, sizeof(un));
    un.sun_family = AF_UNIX;
 
-   snprintf(un.sun_path, sizeof(un.sun_path), "%s", server.socket_name);
+
+   snprintf(un.sun_path, sizeof(un.sun_path), "%s", socket_name ?
+      socket_name : server.socket_name);
+
+
 
    unlink(un.sun_path);
 

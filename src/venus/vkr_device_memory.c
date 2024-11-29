@@ -113,6 +113,59 @@ vkr_get_fd_info_from_allocation_info(struct vkr_physical_device *physical_dev,
 
 #else
 
+#if defined (__ANDROID__)
+#include <dlfcn.h>
+#include <android/hardware_buffer.h>
+#include <vulkan/vulkan_android.h>
+
+typedef struct native_handle {
+  int version; /* sizeof(native_handle_t) */
+  int numFds;  /* number of file-descriptors at &data[0] */
+  int numInts; /* number of ints at &data[numFds] */
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wzero-length-array"
+#endif
+  int data[0]; /* numFds + numInts ints */
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+} native_handle_t;
+
+typedef int (*pfnAHardwareBuffer_allocate)(const AHardwareBuffer_Desc *desc, AHardwareBuffer **outBuffer);
+typedef void (*pfnAHardwareBuffer_release)(AHardwareBuffer *buffer);
+typedef const native_handle_t *(*pfnAHardwareBuffer_getNativeHandle)(const AHardwareBuffer *buffer);
+
+struct fake_gbm_bo {
+   AHardwareBuffer *base;
+   void *handle;
+   size_t size;
+   pfnAHardwareBuffer_allocate allocate;
+   pfnAHardwareBuffer_release release;
+   pfnAHardwareBuffer_getNativeHandle getNativeHandle;
+};
+#endif
+
+#if defined (__ANDROID__)
+static int
+vkr_gbm_bo_get_fd(void *gbm_bo)
+{
+   struct fake_gbm_bo *bo = gbm_bo;
+
+   const native_handle_t *bo_handle = bo->getNativeHandle(bo->base);
+   if (bo_handle) {
+      for (int i = 0u; i < bo_handle->numFds; i++) {
+         size_t size = lseek(bo_handle->data[i], 0, SEEK_END);
+         if (size < bo->size)
+            continue;
+
+         return os_dupfd_cloexec(bo_handle->data[i]);
+      }
+   }
+
+   return -1;
+}
+#else
 static inline int
 vkr_gbm_bo_get_fd(ASSERTED void *gbm_bo)
 {
@@ -120,14 +173,87 @@ vkr_gbm_bo_get_fd(ASSERTED void *gbm_bo)
    assert(!gbm_bo);
    return -1;
 }
+#endif
 
+#if defined (__ANDROID__)
+static void
+vkr_gbm_bo_destroy(void *gbm_bo)
+{
+   struct fake_gbm_bo *bo = gbm_bo;
+   if (!bo)
+      return;
+
+   if (bo->base)
+      bo->release(bo->base);
+   dlclose(bo->handle);
+   free(gbm_bo);
+}
+#else
 static inline void
 vkr_gbm_bo_destroy(ASSERTED void *gbm_bo)
 {
    vkr_log("minigbm_allocation is not enabled");
    assert(!gbm_bo);
 }
+#endif
 
+#if defined (__ANDROID__)
+static VkResult
+vkr_get_fd_info_from_allocation_info(UNUSED struct vkr_physical_device *physical_dev,
+                                     const VkMemoryAllocateInfo *alloc_info,
+                                     void **out_gbm_bo,
+                                     VkImportMemoryFdInfoKHR *out_fd_info)
+{
+   struct fake_gbm_bo *bo = malloc(sizeof(*bo));
+   if (!bo)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+
+   if ((bo->handle = dlopen("libandroid.so", RTLD_NOW)) != NULL) {
+#define LOAD_SYMBOL(func)                                                                \
+   if ((bo->func = (pfnAHardwareBuffer_##func)dlsym(                                     \
+           bo->handle, "AHardwareBuffer_" #func)) == NULL) {                             \
+      dlclose(bo->handle);                                                               \
+      free(bo);                                                                          \
+      return VK_ERROR_INITIALIZATION_FAILED;                                             \
+   }
+
+      LOAD_SYMBOL(allocate)
+      LOAD_SYMBOL(release)
+      LOAD_SYMBOL(getNativeHandle)
+#undef LOAD_SYMBOL
+   } else {
+      free(bo);
+      return VK_ERROR_INITIALIZATION_FAILED;
+   }
+   bo->size = alloc_info->allocationSize;
+
+   AHardwareBuffer_Desc bo_desc = {
+      .width = alloc_info->allocationSize,
+      .height = 1,
+      .layers = 1,
+      .format = AHARDWAREBUFFER_FORMAT_BLOB,
+      .usage = AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER |
+               AHARDWAREBUFFER_USAGE_CPU_READ_RARELY |
+               AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY,
+   };
+
+   if (bo->allocate(&bo_desc, &bo->base))
+      goto error_free_bo;
+
+   VkImportAndroidHardwareBufferInfoANDROID *out_hwb_info = (void *)out_fd_info;
+   *out_gbm_bo = bo;
+   *out_hwb_info = (VkImportAndroidHardwareBufferInfoANDROID){
+      .sType = VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID,
+      .pNext = alloc_info->pNext,
+      .buffer = bo->base,
+   };
+   return VK_SUCCESS;
+
+error_free_bo:
+   vkr_gbm_bo_destroy(bo);
+   return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+}
+#else
 static inline VkResult
 vkr_get_fd_info_from_allocation_info(UNUSED struct vkr_physical_device *physical_dev,
                                      UNUSED const VkMemoryAllocateInfo *alloc_info,
@@ -137,6 +263,7 @@ vkr_get_fd_info_from_allocation_info(UNUSED struct vkr_physical_device *physical
    vkr_log("minigbm_allocation is not enabled");
    return VK_ERROR_OUT_OF_DEVICE_MEMORY;
 }
+#endif
 
 #endif /* ENABLE_MINIGBM_ALLOCATION */
 
@@ -242,6 +369,23 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
       if (export_info->handleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
          valid_fd_types |= 1 << VIRGL_RESOURCE_FD_DMABUF;
    }
+
+#if defined (__ANDROID__)
+   if (getenv("ANDROID_VENUS") && export_info) {
+      VkBaseInStructure *prev_of_export_info =
+         vkr_find_prev_struct(alloc_info, VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO);
+
+      prev_of_export_info->pNext = export_info->pNext;
+
+      args->ret = vkr_get_fd_info_from_allocation_info(physical_dev, alloc_info, &gbm_bo,
+                                                       &local_import_info);
+      if (args->ret != VK_SUCCESS)
+         return;
+
+      alloc_info->pNext = &local_import_info;
+      valid_fd_types = 1 << VIRGL_RESOURCE_FD_DMABUF;
+   }
+#endif
 
    struct vkr_device_memory *mem = vkr_device_memory_create_and_add(ctx, args);
    if (!mem) {
