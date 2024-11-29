@@ -1,0 +1,1 @@
+LD_LIBRARY_PATH=$PREFIX/local/lib/ $PREFIX/local/bin/virgl_test_server --venus --no-virgl --socket-path $TMPDIR/.virgl_test
